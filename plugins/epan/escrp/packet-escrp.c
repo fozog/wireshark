@@ -42,6 +42,21 @@ static int hf_scrp_interrupt_val;
 static int hf_scrp_sync;
 static int hf_scrp_sync_timestamp;
 
+static int hf_scrp_busaccess;
+static int hf_scrp_busaccess_timestamp;
+static int hf_scrp_busaccess_attributes;
+static int hf_scrp_busaccess_addr;
+static int hf_scrp_busaccess_len;
+static int hf_scrp_busaccess_width;
+static int hf_scrp_busaccess_stream_width;
+static int hf_scrp_busaccess_master_id16;
+static int hf_scrp_busaccess_master_id64;
+static int hf_scrp_busaccess_data_offset;  
+static int hf_scrp_busaccess_next_offset;
+static int hf_scrp_busaccess_byte_enable_offset;
+static int hf_scrp_busaccess_byte_enable_len;
+static int hf_scrp_busaccess_data;
+
 
 #define escrp_PORT 9000
 
@@ -54,6 +69,7 @@ static int ett_scrp_hello_caps_hdr;
 static int ett_scrp_hello_caps_list;
 static int ett_scrp_interrupt;
 static int ett_scrp_sync;
+static int ett_scrp_busaccess;
 
 static int proto_escrp;
 static int proto_scrp;
@@ -182,20 +198,29 @@ dissect_escrp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U
         cmd = tvb_get_uint32(tvb, offset, ENC_BIG_ENDIAN) & 0x07; // mask to 3 bits
         offset += 4;
         proto_tree_add_item(scrp_hdr_tree, hf_scrp_hdr_len, tvb, offset, 4, ENC_BIG_ENDIAN);
+        uint32_t pdu_data_len = tvb_get_uint32(tvb, offset, ENC_BIG_ENDIAN);
+        uint32_t pdu_len = sizeof(struct rp_pkt_hdr) + pdu_data_len;
         offset += 4;
         proto_tree_add_item(scrp_hdr_tree, hf_scrp_hdr_id, tvb, offset, 4, ENC_BIG_ENDIAN);
         offset += 4;
         proto_tree_add_item(scrp_hdr_tree, hf_scrp_hdr_flags, tvb, offset, 4, ENC_BIG_ENDIAN);
+        uint32_t flags = tvb_get_uint32(tvb, offset, ENC_BIG_ENDIAN);
+        bool is_response = (flags & RP_PKT_FLAGS_response) != 0;
         offset += 4;
         proto_tree_add_item(scrp_hdr_tree, hf_scrp_hdr_dev, tvb, offset, 4, ENC_BIG_ENDIAN);
         offset += 4;
 
-        col_add_fstr(pinfo->cinfo, COL_INFO, "%s", scrp_cmd_name[cmd]);
+        col_add_fstr(pinfo->cinfo, COL_INFO, "%c%c%c %s", 
+            flags & RP_PKT_FLAGS_posted ? 'P' : '-',
+            flags & RP_PKT_FLAGS_response ? 'R' : '-',
+            flags & RP_PKT_FLAGS_optional ? 'O' : '-',
+            scrp_cmd_name[cmd]
+        );
 
         // offset is at the begining of command specific data
 
-        if (cmd  == RP_CMD_hello) {
-
+        if (cmd  == RP_CMD_hello) 
+        {
             int hello_version = tvb_get_uint32(tvb, offset, ENC_BIG_ENDIAN);
             int caps_offset = rp_packet_offset + tvb_get_uint32(tvb, rp_packet_offset + __offsetof(struct rp_pkt_hello, caps), ENC_BIG_ENDIAN);
             int caps_len = tvb_get_uint16(tvb, rp_packet_offset + __offsetof(struct rp_pkt_hello, caps.len), ENC_BIG_ENDIAN);
@@ -247,7 +272,8 @@ dissect_escrp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U
                 }
             }
         }   
-        else if (cmd == RP_CMD_interrupt) {
+        else if (cmd == RP_CMD_interrupt) 
+        {
             proto_item* interrupt_pi = proto_tree_add_none_format(scrp_tree, hf_scrp_interrupt, tvb, 
                 offset, sizeof(struct rp_pkt_interrupt) - sizeof(struct rp_pkt_hdr),
                  "Interrupt"
@@ -268,7 +294,8 @@ dissect_escrp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U
 
             col_append_fstr(pinfo->cinfo, COL_INFO, " vector=%016llx Line[%u]=%u", vector, line, val);
         }
-        else if (cmd == RP_CMD_sync) {
+        else if (cmd == RP_CMD_sync) 
+        {
             proto_item* sync_pi = proto_tree_add_none_format(scrp_tree, hf_scrp_sync, tvb, 
                 offset, sizeof(struct rp_pkt_sync) - sizeof(struct rp_pkt_hdr),
                  "Sync"
@@ -278,8 +305,116 @@ dissect_escrp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U
             proto_tree_add_item(sync_tree, hf_scrp_sync_timestamp, tvb, offset, 8, ENC_BIG_ENDIAN);
             offset += 8;
         }
+        else if (cmd == RP_CMD_read || cmd == RP_CMD_write) 
+        {
+            proto_item* bus_pi = proto_tree_add_none_format(scrp_tree, hf_scrp_busaccess, tvb, 
+                offset, sizeof(struct rp_pkt_busaccess) - sizeof(struct rp_pkt_hdr),
+                 "Bus Access"
+                );
+
+            proto_tree* bus_tree = proto_item_add_subtree(bus_pi, ett_scrp_busaccess);
+
+            proto_tree_add_item(bus_tree, hf_scrp_busaccess_timestamp, tvb, offset, 8, ENC_BIG_ENDIAN);
+            offset += 8;
+            proto_tree_add_item(bus_tree, hf_scrp_busaccess_attributes, tvb, offset, 8, ENC_BIG_ENDIAN);
+            uint64_t attr = tvb_get_uint64(tvb, offset, ENC_BIG_ENDIAN);
+            offset += 8;
+            proto_tree_add_item(bus_tree, hf_scrp_busaccess_addr, tvb, offset, 8, ENC_BIG_ENDIAN);
+            uint64_t addr = tvb_get_uint64(tvb, offset, ENC_BIG_ENDIAN);
+            offset += 8;
+            proto_tree_add_item(bus_tree, hf_scrp_busaccess_len, tvb, offset, 4, ENC_BIG_ENDIAN);
+            uint32_t bus_data_len = tvb_get_uint32(tvb, offset, ENC_BIG_ENDIAN);
+            offset += 4;
+            proto_tree_add_item(bus_tree, hf_scrp_busaccess_width, tvb, offset, 4, ENC_BIG_ENDIAN);
+            offset += 4;
+            proto_tree_add_item(bus_tree, hf_scrp_busaccess_stream_width, tvb, offset, 4, ENC_BIG_ENDIAN);
+            offset += 4;
+            if ((is_response && pdu_len == sizeof(struct rp_pkt_busaccess) + bus_data_len) ||
+                (!is_response && pdu_len == sizeof(struct rp_pkt_busaccess))) 
+            {
+                proto_tree_add_item(bus_tree, hf_scrp_busaccess_master_id16, tvb, offset, 2, ENC_BIG_ENDIAN);
+                offset += 2;
+                col_append_fstr(pinfo->cinfo, COL_INFO, " %s addr=%016llx len=%u", 
+                    cmd == RP_CMD_read ? "Read" : "Write",
+                    addr, bus_data_len
+                );
+            }
+            else if ((is_response && pdu_len == sizeof(struct rp_pkt_busaccess_ext_base) + bus_data_len) ||
+                    (!is_response && pdu_len == sizeof(struct rp_pkt_busaccess_ext_base))) 
+            {
+                proto_tree_add_item(bus_tree, hf_scrp_busaccess_master_id64, tvb, offset, 8, ENC_BIG_ENDIAN);
+                offset += 8;
+                proto_tree_add_item(bus_tree, hf_scrp_busaccess_data_offset, tvb, offset, 4, ENC_BIG_ENDIAN);
+                offset += 4;
+                proto_tree_add_item(bus_tree, hf_scrp_busaccess_next_offset, tvb, offset, 4, ENC_BIG_ENDIAN);
+                offset += 4;
+                proto_tree_add_item(bus_tree, hf_scrp_busaccess_byte_enable_offset, tvb, offset, 4, ENC_BIG_ENDIAN);
+                offset += 4;
+                proto_tree_add_item(bus_tree, hf_scrp_busaccess_byte_enable_len, tvb, offset, 4, ENC_BIG_ENDIAN);
+                offset += 4;
+                col_append_fstr(pinfo->cinfo, COL_INFO, " EXT %s addr=%016llx len=%u", 
+                    cmd == RP_CMD_read ? "Read" : "Write",
+                    addr, bus_data_len
+                );
+            }
+            else {
+                col_append_fstr(pinfo->cinfo, COL_INFO, 
+                    " inconsistent pdu_len=%u sizeof(struct rp_pkt_busaccess_ext_base) =%lu datalen=%u",
+                     pdu_data_len, sizeof(struct rp_pkt_busaccess_ext_base), bus_data_len
+                    );
+            }
+            if (is_response) {
+                // show data in response packets
+                static char* response_tag[] = {
+                    "#OK",
+                    "#GenericError",
+                    "#AddressError",
+                    "#Code03",
+                    "#Code04",
+                    "#Code05",
+                    "#Code06",
+                    "#Code07",
+                    "#Code08",
+                    "#Code09",
+                    "#Code0A",
+                    "#Code0B",
+                    "#Code0C",
+                    "#Code0D",
+                    "#Code0E",
+                    "#Code0F"
+                };
+                proto_tree_add_item(bus_tree, hf_scrp_busaccess_data, tvb, offset, bus_data_len, ENC_NA);
+                offset += bus_data_len;
+                uint64_t response_code = attr >> 8 & RP_RESP_MAX;
+                if (response_code == RP_RESP_OK) {
+                    uint64_t val;
+                    if (bus_data_len <= 8) {
+                        val = 0;
+                        for(unsigned int i = 0; i < bus_data_len; i++) {
+                            val = (val << 8) | tvb_get_uint8(tvb, offset + i);
+                        }
+                        col_append_fstr(pinfo->cinfo, COL_INFO, " data=0x%0*llx", bus_data_len * 2, val);
+                    } 
+                } 
+                else 
+                {
+                    col_append_fstr(pinfo->cinfo, COL_INFO, " %s", response_tag[response_code]);
+                }
+            }
+            if (attr & RP_BUS_ATTR_EOP)
+                col_append_fstr(pinfo->cinfo, COL_INFO, " #EOP");
+            if (attr & RP_BUS_ATTR_SECURE)
+                col_append_fstr(pinfo->cinfo, COL_INFO, " #SECURE");
+            if (attr & RP_BUS_ATTR_EXT_BASE) 
+                col_append_fstr(pinfo->cinfo, COL_INFO, " #EXT_BASE");
+            if (attr & RP_BUS_ATTR_IO_ACCESS)
+                col_append_fstr(pinfo->cinfo, COL_INFO, " #IO_ACCESS");
+        }
         else {
-            col_append_fstr(pinfo->cinfo, COL_INFO, " unknown command=%u)", cmd);
+            ssize_t l1, l2;
+            l1 = sizeof(struct rp_pkt_busaccess);
+            l2 = sizeof(struct rp_pkt_busaccess_ext_base);
+            col_append_fstr(pinfo->cinfo, COL_INFO, " unknown command=%u l1=%lu l2=%lu)", cmd, l1, l2);
         }
     }
 
@@ -476,6 +611,92 @@ proto_register_escrp(void)
             NULL, HFILL }
         },
 
+
+        // busaccess elements
+        { &hf_scrp_busaccess,
+            { "SCRP BusAccess", "scrp.busaccess",
+            FT_NONE, BASE_NONE, 
+            NULL, 0x0,
+            "SCRP BusAccess (grouping)", HFILL }
+        },
+        { &hf_scrp_busaccess_timestamp,
+            { "Timestamp", "scrp.busaccess.timestamp",
+            FT_UINT64, BASE_DEC,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_attributes,
+            { "Attributes", "scrp.busaccess.attributes",
+            FT_UINT64, BASE_HEX,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_addr,
+            { "Address", "scrp.busaccess.addr",
+            FT_UINT64, BASE_HEX,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_len,
+            { "Length", "scrp.busaccess.len",
+            FT_UINT32, BASE_DEC,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_width,
+            { "Width", "scrp.busaccess.width",
+            FT_UINT32, BASE_DEC,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_stream_width,
+            { "Stream Width", "scrp.busaccess.stream_width",
+            FT_UINT32, BASE_DEC,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_master_id16,
+            { "Master ID", "scrp.busaccess.master_id16",
+            FT_UINT16, BASE_HEX,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_master_id64,
+            { "Master ID", "scrp.busaccess.master_id64",
+            FT_UINT64, BASE_HEX,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_data_offset,
+            { "Data Offset", "scrp.busaccess.data_offset",
+            FT_UINT32, BASE_HEX,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_next_offset,
+            { "Next Offset", "scrp.busaccess.next_offset",
+            FT_UINT32, BASE_HEX,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_byte_enable_offset,
+            { "Byte Enable Offset", "scrp.busaccess.byte_enable_offset",
+            FT_UINT32, BASE_HEX,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_byte_enable_len,
+            { "Byte Enable Length", "scrp.busaccess.byte_enable_len",
+            FT_UINT32, BASE_DEC,
+            NULL, 0x0,
+            NULL, HFILL }
+        },
+        { &hf_scrp_busaccess_data,
+            { "Data", "scrp.busaccess.data",
+            FT_BYTES, BASE_NONE,
+            NULL, 0x0,
+            NULL, HFILL }
+        }
     };
 
     /* Setup protocol subtrees array */
@@ -487,6 +708,8 @@ proto_register_escrp(void)
         &ett_scrp_hello_caps_hdr,
         &ett_scrp_hello_caps_list,
         &ett_scrp_interrupt,
+        &ett_scrp_sync,
+        &ett_scrp_busaccess
     };
 
     proto_scrp = proto_register_protocol (
